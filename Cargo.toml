@@ -1,0 +1,9 @@
+[package]
+name = "redis-exploration"
+version = "0.1.0"
+authors = ["christian"]
+
+[dependencies]
+redis = "0.5.3"
+uuid = { version = "*", features = ["v4"] }
+rand = "*"
