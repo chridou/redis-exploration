@@ -13,12 +13,10 @@ use uuid::Uuid;
 use redis::*;
 
 /// Only set a TTL when the value is empty
-const SET_TTL_LUA: &'static str = r#"
-if redis.call("EXISTS", KEYS[1]) == 1 then
-  local payload = redis.call("GET", KEYS[1])
-  if payload == "" then
-    redis.call("EXPIRE", KEYS[1], ARGV[1])
-  end
+const SET_EMPTY_IF_NOT_EXISTS_AND_ADD_TTL_LUA: &'static str = r#"
+if redis.call("EXISTS", KEYS[1]) == 0 then
+  redis.call("SET", KEYS[1], "")
+  redis.call("EXPIRE", KEYS[1], ARGV[1])
 end
 "#;
 
@@ -256,26 +254,44 @@ fn main() {
         assert!(ttl > 0);
     });
 
-    println!("===== A LUA SCRIPT CAN CONDITIONALLY SET A TTL =====");
+    println!("===== A LUA SCRIPT CAN CONDITIONALLY SET A VALUE WITH A TTL =====");
     println!("A LUA script is atomic: https://redis.io/commands/eval#atomicity-of-scripts");
     measure(|| {
         let k: Vec<u8> = vec![0];
         let v1: Vec<u8> = vec![1];
         let empty: Vec<u8> = vec![];
+
+        println!("Key exists");
         let _: () = conn.set(k.as_slice(), v1.as_slice()).unwrap();
         let res: Vec<u8> = conn.get(k.as_slice()).unwrap();
         assert_eq!(res, v1);
+        let res: Vec<u8> = conn.get(k.as_slice()).unwrap();
         let ttl: i64 = redis::cmd("TTL").arg(k.as_slice()).query(&conn).unwrap();
+        println!("The TTL is {}", ttl);
+        assert_eq!(res, v1);
         assert_eq!(ttl, -1);
-        redis::cmd("EVAL").arg(SET_TTL_LUA).arg(1).arg(k.as_slice()).arg(5).execute(&conn);
+        redis::cmd("EVAL")
+            .arg(SET_EMPTY_IF_NOT_EXISTS_AND_ADD_TTL_LUA)
+            .arg(1)
+            .arg(k.as_slice())
+            .arg(5)
+            .execute(&conn);
         let ttl: i64 = redis::cmd("TTL").arg(k.as_slice()).query(&conn).unwrap();
+        println!("The TTL is {}", ttl);
         assert_eq!(ttl, -1);
-        let _: () = conn.set(k.as_slice(), empty.as_slice()).unwrap();
-        redis::cmd("EVAL").arg(SET_TTL_LUA).arg(1).arg(k.as_slice()).arg(5).execute(&conn);
+
+        println!("Key does not exist");
+        let _: () = conn.del(k.as_slice()).unwrap();
+        redis::cmd("EVAL")
+            .arg(SET_EMPTY_IF_NOT_EXISTS_AND_ADD_TTL_LUA)
+            .arg(1)
+            .arg(k.as_slice())
+            .arg(5)
+            .execute(&conn);
         let ttl: i64 = redis::cmd("TTL").arg(k.as_slice()).query(&conn).unwrap();
         let res: Vec<u8> = conn.get(k.as_slice()).unwrap();
         assert_eq!(res, empty);
-        println!("The TTL set by LUA is {}", ttl);
+        println!("The TTL is {}", ttl);
         assert!(ttl > 0);
     });
 
@@ -311,7 +327,7 @@ fn main() {
         }
     });
 
-    println!("===== PIPELINE: SET TTL 10000 TIMES WITH SETNX AND LUA(ON EMPTY VALUES, ADDS TTL) \
+    println!("===== PIPELINE: SET EMPTY VALUE 10000 TIMES WITH LUA(ON EMPTY VALUES, ADDS TTL) \
               =====");
     measure(|| {
         let keys: Vec<_> = (0..10000)
@@ -322,8 +338,12 @@ fn main() {
         let mut pipe = redis::pipe();
 
         for k in &keys {
-            pipe.cmd("SETNX").arg(k.as_slice()).arg(empty.as_slice()).ignore();
-            pipe.cmd("EVAL").arg(SET_TTL_LUA).arg(1).arg(k.as_slice()).arg(20).ignore();
+            pipe.cmd("EVAL")
+                .arg(SET_EMPTY_IF_NOT_EXISTS_AND_ADD_TTL_LUA)
+                .arg(1)
+                .arg(k.as_slice())
+                .arg(20)
+                .ignore();
         }
 
         pipe.execute(&conn);
@@ -344,19 +364,31 @@ fn main() {
 
     clear(&conn);
 
-    println!("===== PIPELINE: SET TTL 10000 TIMES WITH SETNX AND LUA(ON NON EMPTY VALUES, DOES \
+    println!("===== PIPELINE: SET EMPTY VALUE 10000 TIMES WITH LUA(ON EXISTING VALUES, DOES \
               NOT ADD TTL) =====");
     measure(|| {
         let keys: Vec<_> = (0..10000)
             .map(|_| Uuid::new_v4().as_bytes().iter().cloned().collect::<Vec<_>>())
             .collect();
-        let v: Vec<u8> = vec![1];
+        let v: Vec<u8> = vec![];
 
         let mut pipe = redis::pipe();
 
         for k in &keys {
-            pipe.cmd("SETNX").arg(k.as_slice()).arg(v.as_slice()).ignore();
-            pipe.cmd("EVAL").arg(SET_TTL_LUA).arg(1).arg(k.as_slice()).arg(20).ignore();
+            pipe.set(k.as_slice(), v.as_slice());
+        }
+
+        pipe.execute(&conn);
+
+        let mut pipe = redis::pipe();
+
+        for k in &keys {
+            pipe.cmd("EVAL")
+                .arg(SET_EMPTY_IF_NOT_EXISTS_AND_ADD_TTL_LUA)
+                .arg(1)
+                .arg(k.as_slice())
+                .arg(20)
+                .ignore();
         }
 
         pipe.execute(&conn);
