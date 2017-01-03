@@ -385,7 +385,7 @@ fn measure<F>(f: F) -> ()
     let start = time::Instant::now();
     f();
     let time = time::Instant::now() - start;
-    println!("Took {} ms", duration_to_millis(&time));
+    println!("Took {} ms\n", duration_to_millis(&time));
 }
 
 fn clear(conn: &redis::Connection) {
