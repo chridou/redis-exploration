@@ -362,6 +362,49 @@ fn main() {
         }
     });
 
+    println!("===== PIPELINE: SET EMPTY VALUE 10000 TIMES WITH <<<UPLOADED>>> LUA(ON EMPTY \
+              VALUES, ADDS TTL) =====");
+    measure(|| {
+        let sha1: String = redis::cmd("SCRIPT")
+            .arg("LOAD")
+            .arg(SET_EMPTY_IF_NOT_EXISTS_AND_ADD_TTL_LUA)
+            .query(&conn)
+            .unwrap();
+
+        println!("SHA1 {}", sha1);
+
+        let keys: Vec<_> = (0..10000)
+            .map(|_| Uuid::new_v4().as_bytes().iter().cloned().collect::<Vec<_>>())
+            .collect();
+        let empty: Vec<u8> = vec![];
+
+        let mut pipe = redis::pipe();
+
+        for k in &keys {
+            pipe.cmd("EVALSHA")
+                .arg(&sha1)
+                .arg(1)
+                .arg(k.as_slice())
+                .arg(20)
+                .ignore();
+        }
+
+        pipe.execute(&conn);
+
+        let mut pipe = redis::pipe();
+
+        for k in &keys {
+            pipe.get(k.as_slice());
+            pipe.cmd("TTL").arg(k.as_slice());
+        }
+
+        let results: Vec<(Vec<u8>, i64)> = pipe.query(&conn).unwrap();
+        for (vv, ttl) in results {
+            assert_eq!(vv, empty.clone());
+            assert!(ttl > 0);
+        }
+    });
+
     clear(&conn);
 
     println!("===== PIPELINE: SET EMPTY VALUE 10000 TIMES WITH LUA(ON EXISTING VALUES, DOES \
